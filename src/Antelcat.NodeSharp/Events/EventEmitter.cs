@@ -2,6 +2,8 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
+using System.Threading.Tasks;
+using Handler = System.Func<object?[], System.Threading.Tasks.Task>;
 
 namespace Antelcat.NodeSharp.Events;
 
@@ -9,84 +11,214 @@ public class EventEmitter
 {
     public static int DefaultMaxListeners { get; set; } = 10;
 
-    private readonly ReaderWriterLockSlim      locker   = new();
-    private readonly Dictionary<string, Event> handlers = [];
+    /// <summary>
+    /// The <see cref="EventEmitter"/> instance will emit its own <see cref="EventEmitter.NewListener"/> event before
+    /// a listener is added to its internal array of listeners.
+    /// Listeners registered for the <see cref="EventEmitter.NewListener"/> event are passed the event name and a reference
+    /// to the listener being added.
+    /// The fact that the event is triggered before adding the listener has a subtle but important side effect:
+    /// any additional listeners registered to the same name within the <see cref="EventEmitter.NewListener"/> callback
+    /// are inserted before the listener that is in the process of being added.
+    /// </summary>
+    public event Action<string, Handler>? NewListener;
+    
+    /// <summary>
+    /// The <see cref="EventEmitter.RemovedListener"/> event is emitted after the listener is removed.
+    /// </summary>
+    public event Action<string, Handler>? RemovedListener;
 
+    /// <summary>
+    /// Occurred when listener throws an error
+    /// </summary>
+    public event Action<string, Exception>? EmitError;
 
-    public void AddListener(string eventName, Action<object?[]> listener) => On(eventName, listener);
+    /// <summary>
+    /// <inheritdoc cref="On"/>
+    /// </summary>
+    /// <param name="eventName"><inheritdoc cref="On"/></param>
+    /// <param name="listener"><inheritdoc cref="On"/></param>
+    /// <returns></returns>
+    public EventEmitter AddListener(string eventName, Handler listener) => On(eventName, listener);
 
-    public void Emit(string eventName, params object?[] args)
+    /// <summary>
+    /// Synchronously calls each of the listeners registered for the event named eventName, in the order they were registered,
+    /// passing the supplied arguments to each.
+    /// Returns true if the event had listeners, false otherwise.
+    /// </summary>
+    /// <param name="eventName"></param>
+    /// <param name="args"></param>
+    /// <returns>true if the event had listeners, false otherwise.</returns>
+    public bool Emit(string eventName, params object?[] args)
     {
         locker.EnterReadLock();
-        Get(eventName).Emit(args);
+        var @event = Get(eventName);
+        if (@event is null || @event.Count() == 0)
+        {
+            locker.ExitReadLock();
+            return false;
+        }
+        @event.Emit(args)?.ContinueWith(task => EmitError?.Invoke(eventName, task.Exception), TaskContinuationOptions.OnlyOnFaulted);
         locker.ExitReadLock();
+        return true;
     }
 
+    /// <summary>
+    /// Returns an array listing the events for which the emitter has registered listeners. The values in the array are strings.
+    /// </summary>
     public IReadOnlyCollection<string> EventNames => handlers.Keys;
 
+    /// <summary>
+    /// The current max listener value for the <see cref="EventEmitter"/> which is defaults to <see cref="DefaultMaxListeners"/>
+    /// </summary>
     public int MaxListeners { get; set; } = DefaultMaxListeners;
 
-    public int ListenerCount(string eventName, Action<object?[]>? listener = null) =>
-        !handlers.TryGetValue(eventName, out var @event) ? 0 : @event.Count(listener);
+    /// <summary>
+    /// Returns the number of listeners listening for the event named eventName. If listener is provided,
+    /// it will return how many times the listener is found in the list of the listeners of the event.
+    /// </summary>
+    /// <param name="eventName">name of the event</param>
+    /// <param name="listener"></param>
+    /// <returns></returns>
+    public int ListenerCount(string eventName, Handler? listener = null) => Get(eventName)?.Count(listener) ?? 0;
 
-    public IEnumerable<Action<object?[]>> Listeners(string eventName) =>
-        !handlers.TryGetValue(eventName, out var @event) ? [] : @event.Listeners;
+    /// <summary>
+    /// Returns a copy of the array of listeners for the event named eventName.
+    /// </summary>
+    /// <param name="eventName"></param>
+    /// <returns></returns>
+    public IEnumerable<Handler> Listeners(string eventName) => Get(eventName)?.Listeners ?? [];
 
-    public void Off(string eventName, Action<object?[]> listener)
+    /// <summary>
+    /// <see cref="RemoveListener"/>
+    /// </summary>
+    /// <param name="eventName"></param>
+    /// <param name="listener"></param>
+    /// <returns></returns>
+    public EventEmitter Off(string eventName, Handler listener)
     {
         locker.EnterWriteLock();
         if (handlers.TryGetValue(eventName, out var @event))
         {
             @event.Off(listener);
+            RemovedListener?.Invoke(eventName, listener);
             if (!@event.Listeners.Any()) handlers.Remove(eventName);
         }
 
         locker.ExitWriteLock();
+        return this;
     }
 
-    public void On(string eventName, Action<object?[]> listener)
+    /// <summary>
+    /// Adds the listener function to the end of the listeners array for the event named eventName.
+    /// No checks are made to see if the listener has already been added.
+    /// Multiple calls passing the same combination of eventName and listener will result in the listener being added,
+    /// and called, multiple times.
+    /// </summary>
+    /// <param name="eventName"></param>
+    /// <param name="listener"></param>
+    /// <returns>Returns a reference to the <see cref="EventEmitter"/>, so that calls can be chained.</returns>
+    public EventEmitter On(string eventName, Handler listener)
     {
         locker.EnterWriteLock();
-        CheckEvent(Get(eventName))?.On(listener);
+        WillAdd(eventName, listener)?.On(listener);
         locker.ExitWriteLock();
+        return this;
     }
 
-    public void Once(string eventName, Action<object?[]> listener)
+    /// <summary>
+    /// Adds a one-time listener function for the event named eventName. The next time eventName is triggered,
+    /// this listener is removed and then invoked.
+    /// </summary>
+    /// <param name="eventName"></param>
+    /// <param name="listener"></param>
+    /// <returns>Returns a reference to the <see cref="EventEmitter"/>, so that calls can be chained.</returns>
+    public EventEmitter Once(string eventName, Handler listener)
     {
         locker.EnterWriteLock();
-        CheckEvent(Get(eventName))?.Once(listener);
+        WillAdd(eventName, listener)?.Once(listener,
+            () => RemovedListener?.Invoke(eventName, listener),
+            ex => EmitError?.Invoke(eventName, ex));
         locker.ExitWriteLock();
+        return this;
     }
 
-    public void PrependListener(string eventName, Action<object?[]> listener)
+    /// <summary>
+    /// Adds the listener function to the beginning of the listeners array for the event named eventName.
+    /// No checks are made to see if the listener has already been added.
+    /// Multiple calls passing the same combination of eventName and listener will result in the listener being added,
+    /// and called, multiple times.
+    /// </summary>
+    /// <param name="eventName"></param>
+    /// <param name="listener"></param>
+    /// <returns>Returns a reference to the <see cref="EventEmitter"/>, so that calls can be chained.</returns>
+    public EventEmitter PrependListener(string eventName, Handler listener)
     {
         locker.EnterWriteLock();
-        CheckEvent(Get(eventName))?.Prepend(listener);
+        WillAdd(eventName, listener)?.Prepend(listener);
         locker.ExitWriteLock();
+        return this;
     }
 
-    public void PrependOnceListener(string eventName, Action<object?[]> listener)
+    /// <summary>
+    /// Adds a one-time listener function for the event named eventName to the beginning of the listeners array.
+    /// The next time eventName is triggered, this listener is removed, and then invoked.
+    /// </summary>
+    /// <param name="eventName"></param>
+    /// <param name="listener"></param>
+    /// <returns>Returns a reference to the <see cref="EventEmitter"/>, so that calls can be chained.</returns>
+    public EventEmitter PrependOnceListener(string eventName, Handler listener)
     {
         locker.EnterWriteLock();
-        CheckEvent(Get(eventName))?.PrependOnce(listener);
+        WillAdd(eventName, listener)?.PrependOnce(listener,
+            () => RemovedListener?.Invoke(eventName, listener),
+            ex => EmitError?.Invoke(eventName, ex));
         locker.ExitWriteLock();
+        return this;
     }
 
-    public void RemoveAllListeners(string eventName)
+    /// <summary>
+    /// Removes all listeners, or those of the specified eventName.
+    /// It is bad practice to remove listeners added elsewhere in the code,
+    /// </summary>
+    /// <param name="eventName"></param>
+    /// <returns>Returns a reference to the <see cref="EventEmitter"/>, so that calls can be chained.</returns>
+    public EventEmitter RemoveAllListeners(string eventName)
     {
         locker.EnterWriteLock();
         handlers.Remove(eventName);
         locker.ExitWriteLock();
+        return this;
     }
 
-    public void RemoveListener(string eventName, Action<object?[]> listener) => Off(eventName, listener);
+    /// <summary>
+    /// Removes the specified listener from the listener array for the event named eventName.
+    /// </summary>
+    /// <param name="eventName"></param>
+    /// <param name="listener"></param>
+    /// <returns>Returns a reference to the <see cref="EventEmitter"/>, so that calls can be chained.</returns>
+    public EventEmitter RemoveListener(string eventName, Handler listener) => Off(eventName, listener);
 
-    public IEnumerable<Action<object?[]>> RawListeners(string eventName) =>
-        !handlers.TryGetValue(eventName, out var @event) ? [] : @event.RawListeners;
+    /// <summary>
+    /// Returns a copy of the array of listeners for the event named eventName, including any wrappers (such as those created by .once()).
+    /// </summary>
+    /// <param name="eventName"></param>
+    /// <returns></returns>
+    public IEnumerable<Handler> RawListeners(string eventName) => Get(eventName)?.RawListeners ?? [];
 
+    private readonly ReaderWriterLockSlim      locker   = new();
+    private readonly Dictionary<string, Event> handlers = [];
+    
     private Event? CheckEvent(Event @event) => @event.Count() < MaxListeners ? @event : null;
+    
+    private Event? WillAdd(string eventName, Handler listener)
+    {
+        var @event = CheckEvent(GetOrCreate(eventName));
+        if (@event is null) return null;
+        NewListener?.Invoke(eventName, listener);
+        return @event;
+    }
 
-    private Event Get(string eventName)
+    private Event GetOrCreate(string eventName)
     {
         if (handlers.TryGetValue(eventName, out var @event)) return @event;
         @event              = new Event();
@@ -94,54 +226,74 @@ public class EventEmitter
         return @event;
     }
 
+    private Event? Get(string eventName) =>
+#if NETSTANDARD
+        handlers.GetValueOrDefault(eventName);
+#else
+        handlers.TryGetValue(eventName, out var @event) ? @event : null;
+#endif
+
     private class Event
     {
-        private readonly object          locker    = new();
-        private readonly List<Wrapper>   listeners = [];
-        private event Action<object?[]>? Events;
+        private readonly object        locker    = new();
+        private readonly List<Wrapper> listeners = [];
+        private event Handler?         Events;
 
-        public void Prepend(Action<object?[]> listener) => Prepend(listener, listener);
-        public void On(Action<object?[]> listener)      => On(listener, listener);
+        public void Prepend(Handler listener)                   => Prepend(listener, listener);
+        public void On(Handler listener)                        => On(listener, listener);
 
-        public void PrependOnce(Action<object?[]> listener)
+        public void PrependOnce(Handler listener, Action notifyRemove, Action<Exception> notifyError) =>
+            Prepend(listener, MakeOnce(listener, notifyRemove, notifyError));
+
+        public void Once(Handler listener, Action notifyRemove, Action<Exception> notifyError) =>
+            On(listener, MakeOnce(listener, notifyRemove, notifyError));
+
+        private Handler MakeOnce(Handler listener, Action notifyRemove, Action<Exception> notifyError)
         {
-            Action<object?[]> call = null!;
-            call = args =>
+            Handler once = null!;
+            once = async args =>
             {
                 if (!Remove(listener)) return;
-                Events -= call;
-                listener(args);
+                Events -= once;
+                notifyRemove();
+                try
+                {
+                    await listener(args);
+                }
+                catch (Exception ex)
+                {
+                    notifyError(ex);
+                }
             };
-            Prepend(listener, call);
+            return once;
         }
 
-        public void Once(Action<object?[]> listener)
+        public Task? Emit(params object?[] args)
         {
-            Action<object?[]> call = null!;
-            call = args =>
+            lock (locker)
             {
-                if (!Remove(listener)) return;
-                Events -= call;
-                listener(args);
-            };
-            On(listener, call);
+                try
+                {
+                    return Events?.Invoke(args);
+                }
+                catch (Exception ex)
+                {
+                    return Task.FromException(ex);
+                }
+            }
         }
 
-        public void Emit(params object?[] args)
-        {
-            lock (locker) Events?.Invoke(args);
-        }
+        public void Off(Handler listener) => Remove(listener);
 
-        public void Off(Action<object?[]> listener) => Remove(listener);
-
-        public int Count(Action<object?[]>? listener = null) =>
+        public int Count(Handler? listener = null) =>
             listener is null ? listeners.Count : listeners.Count(x => x.Origin == listener);
 
-        public IEnumerable<Action<object?[]>> Listeners => listeners.Select(static x => x.Origin);
+        public IEnumerable<Handler> Listeners => listeners.Select(static x => x.Origin);
 
-        public IEnumerable<Action<object?[]>> RawListeners => listeners.Select(static x => x.Raw);
+        public IEnumerable<Handler> RawListeners => listeners.Select(static x => x.Raw);
 
-        private void On(Action<object?[]> source, Action<object?[]> call)
+
+        private void On(Handler source, Handler call)
         {
             var handler = new Wrapper(source, call);
             lock (locker)
@@ -151,7 +303,7 @@ public class EventEmitter
             }
         }
 
-        private void Prepend(Action<object?[]> source, Action<object?[]> call)
+        private void Prepend(Handler source, Handler call)
         {
             var handler = new Wrapper(source, call);
             lock (locker)
@@ -161,7 +313,7 @@ public class EventEmitter
             }
         }
 
-        private bool Remove(Action<object?[]> listener)
+        private bool Remove(Handler listener)
         {
             var remove = listeners.FirstOrDefault(x => x.Origin == listener);
             if (remove is null) return false;
@@ -172,9 +324,9 @@ public class EventEmitter
         }
     }
 
-    private class Wrapper(Action<object?[]> origin, Action<object?[]> raw)
+    private class Wrapper(Handler origin, Handler raw)
     {
-        public Action<object?[]> Origin => origin;
-        public Action<object?[]> Raw    => raw;
+        public Handler Origin => origin;
+        public Handler Raw    => raw;
     }
 }

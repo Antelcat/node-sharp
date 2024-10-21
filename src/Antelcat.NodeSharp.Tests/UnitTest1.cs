@@ -107,13 +107,18 @@ public class Tests
     [Test]
     public async Task TestEmitOnce()
     {
+        var name    = "event";
         var emitter = new EventEmitter();
         var times   = 0;
-        emitter.Once("event", _ =>
+        emitter.Once(name, async _ =>
         {
             times++;
             Assert.That(times, Is.LessThan(2));
         });
+        emitter.RemovedListener += (eventName, listener) =>
+        {
+            Console.WriteLine($"event {eventName} removed {listener}");
+        };
         var targetTime  = DateTime.Now + TimeSpan.FromSeconds(1);
         var tasks = new List<Task>();
         for (var i = 0; i < 4; i++)
@@ -124,7 +129,7 @@ public class Tests
                 {
                 }
 
-                emitter.Emit("event", 1);
+                emitter.Emit(name, 1);
             }));
         }
 
@@ -136,7 +141,7 @@ public class Tests
     {
         var emitter = new EventEmitter();
         var times   = 0;
-        emitter.On("event", args =>
+        emitter.On("event", async args =>
         {
             var time = times++;
             Console.WriteLine($"Times:{time} Args:{string.Join(",", args)}");
@@ -164,7 +169,11 @@ public class Tests
     {
         var name    = "event";
         var emitter = new EventEmitter();
-        var handler = (object?[] _) => { Assert.Fail(); };
+        emitter.RemovedListener += (eventName, listener) =>
+        {
+            Console.WriteLine($"event {eventName} removed {listener}");
+        };
+        var handler = async (object?[] _) => { Assert.Fail(); };
         emitter.On(name, handler);
         emitter.Off(name, handler);
         emitter.Emit(name, 1);
@@ -179,8 +188,8 @@ public class Tests
     {
         var name    = "prepend";
         var emitter = new EventEmitter();
-        emitter.On(name, _ => { Console.WriteLine(2); });
-        emitter.PrependListener(name, _ => { Console.WriteLine(1); });
+        emitter.On(name,  async _ => { Console.WriteLine(2); });
+        emitter.PrependListener(name, async _ => { Console.WriteLine(1); });
         emitter.Emit(name, 1);
     }
 
@@ -191,6 +200,41 @@ public class Tests
         action += () => { Console.WriteLine(1); };
         action =  (() => { Console.WriteLine(2); }) + action;
         action();
+    }
+
+    [Test]
+    public async Task TestAsyncTasks()
+    {
+        Func<Task> func = null!;
+        func += async () =>
+        {
+            Console.WriteLine("1 start");
+            await Task.Delay(1000);
+            Console.WriteLine("1 end");
+        };
+        func += async () =>
+        {
+            Console.WriteLine("2 start");
+            await Task.Delay(1000);
+            Console.WriteLine("2 end");
+        };
+        var watch = new Stopwatch();
+        watch.Start();
+        await func();
+        Console.WriteLine(watch.ElapsedMilliseconds);
+    }
+
+    [Test]
+    public async Task TestError()
+    {
+        var emitter = new EventEmitter();
+        emitter.EmitError += (eventName, ex) =>
+        {
+            Console.WriteLine($"{eventName} threw error {ex.GetType()}");
+        };
+        emitter.On("error", async _ => throw new ArgumentNullException());
+        emitter.Emit("error", 1);
+        await Task.Delay(500);
     }
     
     private void Handler(string arg0, string arg1)
