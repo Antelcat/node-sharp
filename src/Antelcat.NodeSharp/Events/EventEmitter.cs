@@ -7,10 +7,10 @@ using Handler = System.Func<object?[], System.Threading.Tasks.Task>;
 
 namespace Antelcat.NodeSharp.Events;
 
-public class EventEmitter
+public class EventEmitter : IEventEmitter
 {
     public static int DefaultMaxListeners { get; set; } = 10;
-
+    
     /// <summary>
     /// The <see cref="EventEmitter"/> instance will emit its own <see cref="EventEmitter.NewListener"/> event before
     /// a listener is added to its internal array of listeners.
@@ -38,7 +38,7 @@ public class EventEmitter
     /// <param name="eventName"><inheritdoc cref="On"/></param>
     /// <param name="listener"><inheritdoc cref="On"/></param>
     /// <returns></returns>
-    public EventEmitter AddListener(string eventName, Handler listener) => On(eventName, listener);
+    public IEventEmitter AddListener(string eventName, Handler listener) => On(eventName, listener);
 
     /// <summary>
     /// Synchronously calls each of the listeners registered for the event named eventName, in the order they were registered,
@@ -94,7 +94,7 @@ public class EventEmitter
     /// <param name="eventName"></param>
     /// <param name="listener"></param>
     /// <returns></returns>
-    public EventEmitter Off(string eventName, Handler listener)
+    public IEventEmitter Off(string eventName, Handler listener)
     {
         locker.EnterWriteLock();
         if (handlers.TryGetValue(eventName, out var @event))
@@ -117,7 +117,7 @@ public class EventEmitter
     /// <param name="eventName"></param>
     /// <param name="listener"></param>
     /// <returns>Returns a reference to the <see cref="EventEmitter"/>, so that calls can be chained.</returns>
-    public EventEmitter On(string eventName, Handler listener)
+    public IEventEmitter On(string eventName, Handler listener)
     {
         locker.EnterWriteLock();
         WillAdd(eventName, listener)?.On(listener);
@@ -132,7 +132,7 @@ public class EventEmitter
     /// <param name="eventName"></param>
     /// <param name="listener"></param>
     /// <returns>Returns a reference to the <see cref="EventEmitter"/>, so that calls can be chained.</returns>
-    public EventEmitter Once(string eventName, Handler listener)
+    public IEventEmitter Once(string eventName, Handler listener)
     {
         locker.EnterWriteLock();
         WillAdd(eventName, listener)?.Once(listener,
@@ -151,7 +151,7 @@ public class EventEmitter
     /// <param name="eventName"></param>
     /// <param name="listener"></param>
     /// <returns>Returns a reference to the <see cref="EventEmitter"/>, so that calls can be chained.</returns>
-    public EventEmitter PrependListener(string eventName, Handler listener)
+    public IEventEmitter PrependListener(string eventName, Handler listener)
     {
         locker.EnterWriteLock();
         WillAdd(eventName, listener)?.Prepend(listener);
@@ -166,7 +166,7 @@ public class EventEmitter
     /// <param name="eventName"></param>
     /// <param name="listener"></param>
     /// <returns>Returns a reference to the <see cref="EventEmitter"/>, so that calls can be chained.</returns>
-    public EventEmitter PrependOnceListener(string eventName, Handler listener)
+    public IEventEmitter PrependOnceListener(string eventName, Handler listener)
     {
         locker.EnterWriteLock();
         WillAdd(eventName, listener)?.PrependOnce(listener,
@@ -182,7 +182,7 @@ public class EventEmitter
     /// </summary>
     /// <param name="eventName"></param>
     /// <returns>Returns a reference to the <see cref="EventEmitter"/>, so that calls can be chained.</returns>
-    public EventEmitter RemoveAllListeners(string eventName)
+    public IEventEmitter RemoveAllListeners(string eventName)
     {
         locker.EnterWriteLock();
         handlers.Remove(eventName);
@@ -196,7 +196,7 @@ public class EventEmitter
     /// <param name="eventName"></param>
     /// <param name="listener"></param>
     /// <returns>Returns a reference to the <see cref="EventEmitter"/>, so that calls can be chained.</returns>
-    public EventEmitter RemoveListener(string eventName, Handler listener) => Off(eventName, listener);
+    public IEventEmitter RemoveListener(string eventName, Handler listener) => Off(eventName, listener);
 
     /// <summary>
     /// Returns a copy of the array of listeners for the event named eventName, including any wrappers (such as those created by .once()).
