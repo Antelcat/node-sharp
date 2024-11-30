@@ -1,6 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Threading.Tasks;
+using Handler = System.Delegate;
 
 namespace Antelcat.NodeSharp.Events;
 
@@ -15,12 +15,12 @@ public interface IEventEmitter
     /// any additional listeners registered to the same name within the <see cref="EventEmitter.NewListener"/> callback
     /// are inserted before the listener that is in the process of being added.
     /// </summary>
-    event Action<string, Func<object?[], Task>>? NewListener;
+    event Action<string, Handler>? NewListener;
 
     /// <summary>
     /// The <see cref="EventEmitter.RemovedListener"/> event is emitted after the listener is removed.
     /// </summary>
-    event Action<string, Func<object?[], Task>>? RemovedListener;
+    event Action<string, Handler>? RemovedListener;
 
     /// <summary>
     /// Occurred when listener throws an error
@@ -43,7 +43,7 @@ public interface IEventEmitter
     /// <param name="eventName"><inheritdoc cref="EventEmitter.On"/></param>
     /// <param name="listener"><inheritdoc cref="EventEmitter.On"/></param>
     /// <returns></returns>
-    IEventEmitter AddListener(string eventName, Func<object?[], Task> listener);
+    IEventEmitter AddListener(string eventName, Handler listener);
 
     /// <summary>
     /// Synchronously calls each of the listeners registered for the event named eventName, in the order they were registered,
@@ -62,14 +62,14 @@ public interface IEventEmitter
     /// <param name="eventName">name of the event</param>
     /// <param name="listener"></param>
     /// <returns></returns>
-    int ListenerCount(string eventName, Func<object?[], Task>? listener = null);
+    int ListenerCount(string eventName, Handler? listener = null);
 
     /// <summary>
     /// Returns a copy of the array of listeners for the event named eventName.
     /// </summary>
     /// <param name="eventName"></param>
     /// <returns></returns>
-    IEnumerable<Func<object?[], Task>> Listeners(string eventName);
+    IEnumerable<Handler> Listeners(string eventName);
 
     /// <summary>
     /// <see cref="EventEmitter.RemoveListener"/>
@@ -77,7 +77,7 @@ public interface IEventEmitter
     /// <param name="eventName"></param>
     /// <param name="listener"></param>
     /// <returns></returns>
-    IEventEmitter Off(string eventName, Func<object?[], Task> listener);
+    IEventEmitter Off(string eventName, Handler listener);
 
     /// <summary>
     /// Adds the listener function to the end of the listeners array for the event named eventName.
@@ -88,7 +88,7 @@ public interface IEventEmitter
     /// <param name="eventName"></param>
     /// <param name="listener"></param>
     /// <returns>Returns a reference to the <see cref="EventEmitter"/>, so that calls can be chained.</returns>
-    IEventEmitter On(string eventName, Func<object?[], Task> listener);
+    IEventEmitter On(string eventName, Handler listener);
 
     /// <summary>
     /// Adds a one-time listener function for the event named eventName. The next time eventName is triggered,
@@ -97,7 +97,7 @@ public interface IEventEmitter
     /// <param name="eventName"></param>
     /// <param name="listener"></param>
     /// <returns>Returns a reference to the <see cref="EventEmitter"/>, so that calls can be chained.</returns>
-    IEventEmitter Once(string eventName, Func<object?[], Task> listener);
+    IEventEmitter Once(string eventName, Handler listener);
 
     /// <summary>
     /// Adds the listener function to the beginning of the listeners array for the event named eventName.
@@ -108,7 +108,7 @@ public interface IEventEmitter
     /// <param name="eventName"></param>
     /// <param name="listener"></param>
     /// <returns>Returns a reference to the <see cref="EventEmitter"/>, so that calls can be chained.</returns>
-    IEventEmitter PrependListener(string eventName, Func<object?[], Task> listener);
+    IEventEmitter PrependListener(string eventName, Handler listener);
 
     /// <summary>
     /// Adds a one-time listener function for the event named eventName to the beginning of the listeners array.
@@ -117,7 +117,7 @@ public interface IEventEmitter
     /// <param name="eventName"></param>
     /// <param name="listener"></param>
     /// <returns>Returns a reference to the <see cref="EventEmitter"/>, so that calls can be chained.</returns>
-    IEventEmitter PrependOnceListener(string eventName, Func<object?[], Task> listener);
+    IEventEmitter PrependOnceListener(string eventName, Handler listener);
 
     /// <summary>
     /// Removes all listeners, or those of the specified eventName.
@@ -133,12 +133,12 @@ public interface IEventEmitter
     /// <param name="eventName"></param>
     /// <param name="listener"></param>
     /// <returns>Returns a reference to the <see cref="EventEmitter"/>, so that calls can be chained.</returns>
-    IEventEmitter RemoveListener(string eventName, Func<object?[], Task> listener);
+    IEventEmitter RemoveListener(string eventName, Handler listener);
 
     /// <summary>
     /// Returns a copy of the array of listeners for the event named eventName, including any wrappers (such as those created by .once()).
     /// </summary>
     /// <param name="eventName"></param>
     /// <returns></returns>
-    IEnumerable<Func<object?[], Task>> RawListeners(string eventName);
+    IEnumerable<Handler> RawListeners(string eventName);
 }

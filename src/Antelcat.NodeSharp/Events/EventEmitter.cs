@@ -1,16 +1,17 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
-using Handler = System.Func<object?[], System.Threading.Tasks.Task>;
+using Handler = System.Delegate;
 
 namespace Antelcat.NodeSharp.Events;
 
 public class EventEmitter : IEventEmitter
 {
     public static int DefaultMaxListeners { get; set; } = 10;
-    
+
     /// <summary>
     /// The <see cref="EventEmitter"/> instance will emit its own <see cref="EventEmitter.NewListener"/> event before
     /// a listener is added to its internal array of listeners.
@@ -21,7 +22,7 @@ public class EventEmitter : IEventEmitter
     /// are inserted before the listener that is in the process of being added.
     /// </summary>
     public event Action<string, Handler>? NewListener;
-    
+
     /// <summary>
     /// The <see cref="EventEmitter.RemovedListener"/> event is emitted after the listener is removed.
     /// </summary>
@@ -57,7 +58,10 @@ public class EventEmitter : IEventEmitter
             locker.ExitReadLock();
             return false;
         }
-        @event.Emit(args)?.ContinueWith(task => EmitError?.Invoke(eventName, task.Exception), TaskContinuationOptions.OnlyOnFaulted);
+
+        @event.Emit(args)?.ContinueWith(task => 
+                EmitError?.Invoke(eventName, task.Exception), //probably emit error
+            TaskContinuationOptions.OnlyOnFaulted);
         locker.ExitReadLock();
         return true;
     }
@@ -120,7 +124,7 @@ public class EventEmitter : IEventEmitter
     public IEventEmitter On(string eventName, Handler listener)
     {
         locker.EnterWriteLock();
-        WillAdd(eventName, listener)?.On(listener);
+        WillAdd(eventName, listener)?.On(listener, ex => EmitError?.Invoke(eventName, ex));
         locker.ExitWriteLock();
         return this;
     }
@@ -154,7 +158,7 @@ public class EventEmitter : IEventEmitter
     public IEventEmitter PrependListener(string eventName, Handler listener)
     {
         locker.EnterWriteLock();
-        WillAdd(eventName, listener)?.Prepend(listener);
+        WillAdd(eventName, listener)?.Prepend(listener, ex => EmitError?.Invoke(eventName, ex));
         locker.ExitWriteLock();
         return this;
     }
@@ -207,9 +211,9 @@ public class EventEmitter : IEventEmitter
 
     private readonly ReaderWriterLockSlim      locker   = new();
     private readonly Dictionary<string, Event> handlers = [];
-    
+
     private Event? CheckEvent(Event @event) => @event.Count() < MaxListeners ? @event : null;
-    
+
     private Event? WillAdd(string eventName, Handler listener)
     {
         var @event = CheckEvent(GetOrCreate(eventName));
@@ -235,46 +239,30 @@ public class EventEmitter : IEventEmitter
 
     private class Event
     {
-        private readonly object        locker    = new();
-        private readonly List<Wrapper> listeners = [];
-        private event Handler?         Events;
+        private readonly object                 locker    = new();
+        private readonly List<Wrapper>          listeners = [];
+        private event Func<object?[], object?>? Events;
 
-        public void Prepend(Handler listener)                   => Prepend(listener, listener);
-        public void On(Handler listener)                        => On(listener, listener);
+        public void Prepend(Handler listener, Action<Exception> notifyError) =>
+            Prepend(new Wrapper(listener, Make(listener, notifyError)));
+
+        public void On(Handler listener, Action<Exception> notifyError) =>
+            On(new Wrapper(listener, Make(listener, notifyError)));
 
         public void PrependOnce(Handler listener, Action notifyRemove, Action<Exception> notifyError) =>
-            Prepend(listener, MakeOnce(listener, notifyRemove, notifyError));
+            Prepend(new Wrapper(listener, MakeOnce(listener, notifyRemove, notifyError)));
 
         public void Once(Handler listener, Action notifyRemove, Action<Exception> notifyError) =>
-            On(listener, MakeOnce(listener, notifyRemove, notifyError));
+            On(new Wrapper(listener, MakeOnce(listener, notifyRemove, notifyError)));
 
-        private Handler MakeOnce(Handler listener, Action notifyRemove, Action<Exception> notifyError)
-        {
-            Handler once = null!;
-            once = async args =>
-            {
-                if (!Remove(listener)) return;
-                Events -= once;
-                notifyRemove();
-                try
-                {
-                    await listener(args);
-                }
-                catch (Exception ex)
-                {
-                    notifyError(ex);
-                }
-            };
-            return once;
-        }
-
-        public Task? Emit(params object?[] args)
+        
+        public Task? Emit(object?[] args)
         {
             lock (locker)
             {
                 try
                 {
-                    return Events?.Invoke(args);
+                    return Events?.Invoke(args) as Task;
                 }
                 catch (Exception ex)
                 {
@@ -292,41 +280,98 @@ public class EventEmitter : IEventEmitter
 
         public IEnumerable<Handler> RawListeners => listeners.Select(static x => x.Raw);
 
-
-        private void On(Handler source, Handler call)
+        
+        private void On(Wrapper wrapper)
         {
-            var handler = new Wrapper(source, call);
             lock (locker)
             {
-                listeners.Add(handler);
-                Events += handler.Raw;
+                listeners.Add(wrapper);
+                Events += wrapper.Raw;
             }
         }
 
-        private void Prepend(Handler source, Handler call)
+        private void Prepend(Wrapper wrapper)
         {
-            var handler = new Wrapper(source, call);
             lock (locker)
             {
-                listeners.Add(handler);
-                Events = handler.Raw + Events;
+                listeners.Add(wrapper);
+                Events = wrapper.Raw + Events;
             }
         }
 
         private bool Remove(Handler listener)
         {
-            var remove = listeners.FirstOrDefault(x => x.Origin == listener);
+            var remove = listeners.FirstOrDefault(x => Equals(x.Origin, listener));
             if (remove is null) return false;
             lock (locker)
             {
-                return listeners.Remove(remove);
+                if (!listeners.Remove(remove)) return false;
+                Events -= remove.Raw;
+                return true;
             }
+        }
+        
+        private static Func<object?[], object?> Make(Handler listener, Action<Exception> notifyError)
+        {
+            var made = Make(listener);
+            return args =>
+            {
+                try
+                {
+                    return made(args);
+                }
+                catch (Exception ex)
+                {
+                    notifyError(ex);
+                }
+
+                return null;
+            };
+        }
+
+        private Func<object?[], object?> MakeOnce(Handler listener, Action notifyRemove, Action<Exception> notifyError)
+        {
+            var made = Make(listener);
+            return args =>
+            {
+                if (!Remove(listener)) return null;
+                notifyRemove();
+                try
+                {
+                    return made(args);
+                }
+                catch (Exception ex)
+                {
+                    notifyError(ex);
+                }
+
+                return null;
+            };
+        }
+
+        private static Func<object?[], object?> Make(Handler listener)
+        {
+            var param       = listener.Method.GetParameters();
+            var paramLength = param.Length;
+            return param.Length switch
+            {
+                0                                                 => _ => listener.DynamicInvoke(),
+                1 when param[0].ParameterType == typeof(object[]) => 
+                    args => listener.DynamicInvoke([args]),
+                _ => args =>
+                {
+                    if (args.Length == paramLength) return listener.DynamicInvoke(args);
+                    var target                                      = new object?[paramLength];
+                    for (var i = 0; i < paramLength; i++) target[i] = i >= args.Length ? null : args[i];
+                    return listener.DynamicInvoke(target);
+                }
+            };
         }
     }
 
-    private class Wrapper(Handler origin, Handler raw)
+    private class Wrapper(Handler origin, Func<object?[], object?> raw)
     {
-        public Handler Origin => origin;
-        public Handler Raw    => raw;
+        public Handler                  Origin => origin;
+        public Func<object?[], object?> Raw    => raw;
     }
 }
