@@ -10,11 +10,14 @@ namespace Antelcat.NodeSharp.Tests;
 
 public class Tests
 {
-    private readonly EventEmitter emitter = new();
+    private readonly EventEmitter emitter = new(new EventEmitterOptions()
+    {
+        CaptureFailed = true
+    });
     [SetUp]
     public void Setup()
     {
-        emitter.EmitError += Failed;
+        emitter.Error += Failed;
     }
 
     private void Failed(string name, Exception ex) => Assert.Fail(name, ex);
@@ -47,7 +50,7 @@ public class Tests
                 emitter.Emit(name, 1);
             }));
         }
-
+        
         await Task.WhenAll(tasks);
     }
 
@@ -120,23 +123,15 @@ public class Tests
     }
 
     [Test]
-    public void TestError()
-    {
-        emitter.EmitError -= Failed;
-        emitter.EmitError += (eventName, ex) =>
-        {
-            Console.WriteLine($"{eventName} threw error {ex.GetType()}");
-        };
-        emitter.On("error", (Action<int>)(i => throw new ArgumentNullException()));
-        emitter.Emit("error", 1);
-    }
-
-    [Test]
     public void TestVariantListen()
     {
         const string name = "variant";
         emitter.On(name, () => { Console.WriteLine("I dont need arg"); });
-        emitter.On(name, async () => { Console.WriteLine("I dont need arg and I am async"); });
+        emitter.On(name, async () =>
+        {
+            await Task.CompletedTask;
+            Console.WriteLine("I dont need arg and I am async"); 
+        });
         emitter.On(name, (params object[] args) =>
         {
             Console.WriteLine($"I need everything, they are {string.Join(", ", args)}");
@@ -154,4 +149,34 @@ public class Tests
         Console.WriteLine("--- next round ---");
         emitter.Emit(name, 2, 3);
     }
+
+    [Test]
+    public async Task TestException()
+    {
+        emitter.On("Error", (Action)(() => throw new Exception("Sync Error")));
+        try
+        {
+            emitter.Emit("Error");
+            Assert.Fail();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"{ex.InnerException?.Message} threw");
+        }
+
+        var source = Wait<Exception>();
+        emitter.Error -= Failed;
+        emitter.Error += (_, ex) =>
+        {
+            source.SetResult(ex);
+        };
+        emitter.On("AsyncError", (Func<Task>)(async () => throw new Exception("Async Error")));
+        emitter.Emit("AsyncError");
+        var ae = await source.Task;
+        Console.WriteLine($"{ae.InnerException?.Message} threw");
+        Assert.Pass();
+    }
+
+    private TaskCompletionSource<T> Wait<T>() => new();
+    private TaskCompletionSource    Wait()    => new();
 }

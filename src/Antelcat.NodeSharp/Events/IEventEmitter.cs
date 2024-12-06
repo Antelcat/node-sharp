@@ -25,7 +25,7 @@ public interface IEventEmitter
     /// <summary>
     /// Occurred when listener throws an error
     /// </summary>
-    event Action<string, Exception>? EmitError;
+    event Action<string, Exception>? Error;
 
     /// <summary>
     /// Returns an array listing the events for which the emitter has registered listeners. The values in the array are strings.

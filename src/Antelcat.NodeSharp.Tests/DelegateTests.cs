@@ -57,6 +57,21 @@ public class DelegateTests
         var fin = Delegate.Combine(AsDelegate, Action);
         var del = Delegate.Remove(fin, Action);
     }
+
+    [Test]
+    public void TestException()
+    {
+        Action e = () => throw new Exception("1");
+        e += () => throw new Exception("2");
+        try
+        {
+            e();
+        }
+        catch (Exception ex)
+        {
+            Debugger.Break();
+        }
+    }
     
     private int count;
     public Delegate New()
@@ -72,4 +87,12 @@ public class DelegateTests
     {
         
     }
+    
+    [Test]
+    public async Task TestCancel()
+    {
+        var source = new CancellationTokenSource();
+        await source.CancelAsync();
+        await Task.FromCanceled(source.Token).ContinueWith(t => { }, TaskContinuationOptions.OnlyOnCanceled);
+    } 
 }

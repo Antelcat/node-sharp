@@ -1,14 +1,13 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using Handler = System.Delegate;
 
 namespace Antelcat.NodeSharp.Events;
 
-public class EventEmitter : IEventEmitter
+public class EventEmitter(EventEmitterOptions? options = null) : IEventEmitter
 {
     public static int DefaultMaxListeners { get; set; } = 10;
 
@@ -31,7 +30,7 @@ public class EventEmitter : IEventEmitter
     /// <summary>
     /// Occurred when listener throws an error
     /// </summary>
-    public event Action<string, Exception>? EmitError;
+    public event Action<string, Exception>? Error;
 
     /// <summary>
     /// <inheritdoc cref="On"/>
@@ -59,10 +58,14 @@ public class EventEmitter : IEventEmitter
             return false;
         }
 
-        @event.Emit(args)?.ContinueWith(task => 
-                EmitError?.Invoke(eventName, task.Exception), //probably emit error
-            TaskContinuationOptions.OnlyOnFaulted);
-        locker.ExitReadLock();
+        try
+        {
+            @event.Emit(args);
+        }
+        finally
+        {
+            locker.ExitReadLock();
+        }
         return true;
     }
 
@@ -124,7 +127,7 @@ public class EventEmitter : IEventEmitter
     public IEventEmitter On(string eventName, Handler listener)
     {
         locker.EnterWriteLock();
-        WillAdd(eventName, listener)?.On(listener, ex => EmitError?.Invoke(eventName, ex));
+        WillAdd(eventName, listener)?.On(listener, EmitError(eventName));
         locker.ExitWriteLock();
         return this;
     }
@@ -139,9 +142,10 @@ public class EventEmitter : IEventEmitter
     public IEventEmitter Once(string eventName, Handler listener)
     {
         locker.EnterWriteLock();
-        WillAdd(eventName, listener)?.Once(listener,
-            () => RemovedListener?.Invoke(eventName, listener),
-            ex => EmitError?.Invoke(eventName, ex));
+        WillAdd(eventName, listener)?
+            .Once(listener,
+                () => RemovedListener?.Invoke(eventName, listener),
+                EmitError(eventName));
         locker.ExitWriteLock();
         return this;
     }
@@ -158,7 +162,8 @@ public class EventEmitter : IEventEmitter
     public IEventEmitter PrependListener(string eventName, Handler listener)
     {
         locker.EnterWriteLock();
-        WillAdd(eventName, listener)?.Prepend(listener, ex => EmitError?.Invoke(eventName, ex));
+        WillAdd(eventName, listener)?
+            .Prepend(listener, EmitError(eventName));
         locker.ExitWriteLock();
         return this;
     }
@@ -173,9 +178,10 @@ public class EventEmitter : IEventEmitter
     public IEventEmitter PrependOnceListener(string eventName, Handler listener)
     {
         locker.EnterWriteLock();
-        WillAdd(eventName, listener)?.PrependOnce(listener,
-            () => RemovedListener?.Invoke(eventName, listener),
-            ex => EmitError?.Invoke(eventName, ex));
+        WillAdd(eventName, listener)?
+            .PrependOnce(listener,
+                () => RemovedListener?.Invoke(eventName, listener),
+                EmitError(eventName));
         locker.ExitWriteLock();
         return this;
     }
@@ -237,37 +243,38 @@ public class EventEmitter : IEventEmitter
         handlers.TryGetValue(eventName, out var @event) ? @event : null;
 #endif
 
+    private Action<Exception>? EmitError(string eventName) =>
+        options?.CaptureFailed is true
+            ? exception =>
+            {
+                if (Error is null) throw exception;
+                Error(eventName, exception);
+            }
+            : null;
+
     private class Event
     {
-        private readonly object                 locker    = new();
-        private readonly List<Wrapper>          listeners = [];
-        private event Func<object?[], object?>? Events;
+        private readonly object          locker    = new();
+        private readonly List<Wrapper>   listeners = [];
+        private event Action<object?[]>? Events;
 
-        public void Prepend(Handler listener, Action<Exception> notifyError) =>
+        public void Prepend(Handler listener, Action<Exception>? notifyError) =>
             Prepend(new Wrapper(listener, Make(listener, notifyError)));
 
-        public void On(Handler listener, Action<Exception> notifyError) =>
+        public void On(Handler listener, Action<Exception>? notifyError) =>
             On(new Wrapper(listener, Make(listener, notifyError)));
 
-        public void PrependOnce(Handler listener, Action notifyRemove, Action<Exception> notifyError) =>
+        public void PrependOnce(Handler listener, Action notifyRemove, Action<Exception>? notifyError) =>
             Prepend(new Wrapper(listener, MakeOnce(listener, notifyRemove, notifyError)));
 
-        public void Once(Handler listener, Action notifyRemove, Action<Exception> notifyError) =>
+        public void Once(Handler listener, Action notifyRemove, Action<Exception>? notifyError) =>
             On(new Wrapper(listener, MakeOnce(listener, notifyRemove, notifyError)));
-
         
-        public Task? Emit(object?[] args)
+        public void Emit(object?[] args)
         {
             lock (locker)
             {
-                try
-                {
-                    return Events?.Invoke(args) as Task;
-                }
-                catch (Exception ex)
-                {
-                    return Task.FromException(ex);
-                }
+                Events?.Invoke(args);
             }
         }
 
@@ -279,7 +286,6 @@ public class EventEmitter : IEventEmitter
         public IEnumerable<Handler> Listeners => listeners.Select(static x => x.Origin);
 
         public IEnumerable<Handler> RawListeners => listeners.Select(static x => x.Raw);
-
         
         private void On(Wrapper wrapper)
         {
@@ -302,51 +308,49 @@ public class EventEmitter : IEventEmitter
         private bool Remove(Handler listener)
         {
             var remove = listeners.FirstOrDefault(x => Equals(x.Origin, listener));
-            if (remove is null) return false;
-            lock (locker)
+            lock (listeners)
             {
-                if (!listeners.Remove(remove)) return false;
+                if (remove is null || !listeners.Remove(remove)) return false;
                 Events -= remove.Raw;
-                return true;
             }
-        }
-        
-        private static Func<object?[], object?> Make(Handler listener, Action<Exception> notifyError)
-        {
-            var made = Make(listener);
-            return args =>
-            {
-                try
-                {
-                    return made(args);
-                }
-                catch (Exception ex)
-                {
-                    notifyError(ex);
-                }
-
-                return null;
-            };
+            return true;
         }
 
-        private Func<object?[], object?> MakeOnce(Handler listener, Action notifyRemove, Action<Exception> notifyError)
+        private static Action<object?[]> Make(Handler listener, Action<Exception>? notifyError)
         {
             var made = Make(listener);
-            return args =>
-            {
-                if (!Remove(listener)) return null;
-                notifyRemove();
-                try
+            return notifyError is null
+                ? args => made(args)
+                : args =>
                 {
-                    return made(args);
-                }
-                catch (Exception ex)
-                {
-                    notifyError(ex);
-                }
+                    var task = made(args) as Task;
+                    task?.ContinueWith(t =>
+                    {
+                        notifyError(t.Exception);
+                    }, TaskContinuationOptions.NotOnRanToCompletion);
+                };
+        }
 
-                return null;
-            };
+        private Action<object?[]> MakeOnce(Handler listener, Action notifyRemove, Action<Exception>? notifyError)
+        {
+            var made = Make(listener);
+            return notifyError is null
+                ? args =>
+                {
+                    if (!Remove(listener)) return;
+                    notifyRemove();
+                    made(args);
+                }
+                : args =>
+                {
+                    if (!Remove(listener)) return;
+                    notifyRemove();
+                    var task = made(args) as Task;
+                    task?.ContinueWith(t =>
+                    {
+                        notifyError(t.Exception);
+                    }, TaskContinuationOptions.NotOnRanToCompletion);
+                };
         }
 
         private static Func<object?[], object?> Make(Handler listener)
@@ -356,11 +360,13 @@ public class EventEmitter : IEventEmitter
             return param.Length switch
             {
                 0                                                 => _ => listener.DynamicInvoke(),
-                1 when param[0].ParameterType == typeof(object[]) => 
-                    args => listener.DynamicInvoke([args]),
+                1 when param[0].ParameterType == typeof(object[]) => args => listener.DynamicInvoke([args]),
                 _ => args =>
                 {
-                    if (args.Length == paramLength) return listener.DynamicInvoke(args);
+                    if (args.Length == paramLength)
+                    {
+                        return listener.DynamicInvoke(args);
+                    }
                     var target                                      = new object?[paramLength];
                     for (var i = 0; i < paramLength; i++) target[i] = i >= args.Length ? null : args[i];
                     return listener.DynamicInvoke(target);
@@ -369,9 +375,9 @@ public class EventEmitter : IEventEmitter
         }
     }
 
-    private class Wrapper(Handler origin, Func<object?[], object?> raw)
+    private class Wrapper(Handler origin, Action<object?[]> raw)
     {
-        public Handler                  Origin => origin;
-        public Func<object?[], object?> Raw    => raw;
+        public Handler           Origin => origin;
+        public Action<object?[]> Raw    => raw;
     }
 }
