@@ -126,11 +126,17 @@ public class Tests
     public void TestVariantListen()
     {
         const string name = "variant";
-        emitter.On(name, () => { Console.WriteLine("I dont need arg"); });
+        emitter.On(name, () =>
+        {
+            Console.WriteLine("I dont need arg start");
+            Task.Delay(500).Wait();
+            Console.WriteLine("I dont need arg end");
+        });
         emitter.On(name, async () =>
         {
-            await Task.CompletedTask;
-            Console.WriteLine("I dont need arg and I am async"); 
+            Console.WriteLine("I dont need arg and I am async start"); 
+            await Task.Delay(500);
+            Console.WriteLine("I dont need arg and I am async end"); 
         });
         emitter.On(name, (params object[] args) =>
         {
@@ -138,7 +144,9 @@ public class Tests
         });
         emitter.On(name, (int first) =>
         {
-            Console.WriteLine($"I need strong type first arg as int: {first}");
+            Console.WriteLine($"I need strong type first arg as int: {first} start");
+            Task.Delay(500).Wait();
+            Console.WriteLine($"I need strong type first arg as int: {first} end");
         });
         emitter.On(name, (int first, int second, object third) =>
         {
@@ -175,6 +183,29 @@ public class Tests
         var ae = await source.Task;
         Console.WriteLine($"{ae.InnerException?.Message} threw");
         Assert.Pass();
+    }
+
+    [Test]
+    public async Task TestAsync()
+    {
+        var watch = Stopwatch.StartNew();
+        // var a1    = AsyncStartLongRun(1);
+        // var a2    = AsyncStartLongRun(2);
+        // var a3    = AsyncStartLongRun(3);
+        // await a1;
+        // await a2;
+        // await a3;
+
+        
+        
+        async Task AsyncStartLongRun(int number)
+        {
+            Console.WriteLine($"{number} enter at id:{Thread.CurrentThread.ManagedThreadId} time:{watch.ElapsedTicks}");
+            await Task.Yield();
+            Console.WriteLine($"{number} start at id:{Thread.CurrentThread.ManagedThreadId} time:{watch.ElapsedTicks}");
+            Task.Delay(1000).Wait();
+            Console.WriteLine($"{number} end   at id:{Thread.CurrentThread.ManagedThreadId} time:{watch.ElapsedTicks}");
+        }
     }
 
     private TaskCompletionSource<T> Wait<T>() => new();

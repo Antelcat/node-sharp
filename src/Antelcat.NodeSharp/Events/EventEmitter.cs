@@ -1,6 +1,9 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+#if NETSTANDARD1_0
+using System.Reflection;
+#endif
 using System.Threading;
 using System.Threading.Tasks;
 using Handler = System.Delegate;
@@ -66,13 +69,20 @@ public class EventEmitter(EventEmitterOptions? options = null) : IEventEmitter
         {
             locker.ExitReadLock();
         }
+
         return true;
     }
 
     /// <summary>
     /// Returns an array listing the events for which the emitter has registered listeners. The values in the array are strings.
     /// </summary>
-    public IReadOnlyCollection<string> EventNames => handlers.Keys;
+    public
+#if NET40 || NETSTANDARD1_0
+        IEnumerable<string>
+#else
+        IReadOnlyCollection<string>
+#endif
+        EventNames => handlers.Keys;
 
     /// <summary>
     /// The current max listener value for the <see cref="EventEmitter"/> which is defaults to <see cref="DefaultMaxListeners"/>
@@ -237,7 +247,7 @@ public class EventEmitter(EventEmitterOptions? options = null) : IEventEmitter
     }
 
     private Event? Get(string eventName) =>
-#if NETSTANDARD
+#if NETSTANDARD2_1
         handlers.GetValueOrDefault(eventName);
 #else
         handlers.TryGetValue(eventName, out var @event) ? @event : null;
@@ -269,7 +279,7 @@ public class EventEmitter(EventEmitterOptions? options = null) : IEventEmitter
 
         public void Once(Handler listener, Action notifyRemove, Action<Exception>? notifyError) =>
             On(new Wrapper(listener, MakeOnce(listener, notifyRemove, notifyError)));
-        
+
         public void Emit(object?[] args)
         {
             lock (locker)
@@ -286,7 +296,7 @@ public class EventEmitter(EventEmitterOptions? options = null) : IEventEmitter
         public IEnumerable<Handler> Listeners => listeners.Select(static x => x.Origin);
 
         public IEnumerable<Handler> RawListeners => listeners.Select(static x => x.Raw);
-        
+
         private void On(Wrapper wrapper)
         {
             lock (locker)
@@ -313,6 +323,7 @@ public class EventEmitter(EventEmitterOptions? options = null) : IEventEmitter
                 if (remove is null || !listeners.Remove(remove)) return false;
                 Events -= remove.Raw;
             }
+
             return true;
         }
 
@@ -324,10 +335,8 @@ public class EventEmitter(EventEmitterOptions? options = null) : IEventEmitter
                 : args =>
                 {
                     var task = made(args) as Task;
-                    task?.ContinueWith(t =>
-                    {
-                        notifyError(t.Exception);
-                    }, TaskContinuationOptions.NotOnRanToCompletion);
+                    task?.ContinueWith(t => { notifyError(t.Exception); },
+                        TaskContinuationOptions.NotOnRanToCompletion);
                 };
         }
 
@@ -346,16 +355,20 @@ public class EventEmitter(EventEmitterOptions? options = null) : IEventEmitter
                     if (!Remove(listener)) return;
                     notifyRemove();
                     var task = made(args) as Task;
-                    task?.ContinueWith(t =>
-                    {
-                        notifyError(t.Exception);
-                    }, TaskContinuationOptions.NotOnRanToCompletion);
+                    task?.ContinueWith(t => { notifyError(t.Exception); },
+                        TaskContinuationOptions.NotOnRanToCompletion);
                 };
         }
 
         private static Func<object?[], object?> Make(Handler listener)
         {
-            var param       = listener.Method.GetParameters();
+            var param = listener
+#if NETSTANDARD1_0
+                .GetMethodInfo()
+#else
+                .Method
+#endif
+                .GetParameters();
             var paramLength = param.Length;
             return param.Length switch
             {
@@ -367,6 +380,7 @@ public class EventEmitter(EventEmitterOptions? options = null) : IEventEmitter
                     {
                         return listener.DynamicInvoke(args);
                     }
+
                     var target                                      = new object?[paramLength];
                     for (var i = 0; i < paramLength; i++) target[i] = i >= args.Length ? null : args[i];
                     return listener.DynamicInvoke(target);

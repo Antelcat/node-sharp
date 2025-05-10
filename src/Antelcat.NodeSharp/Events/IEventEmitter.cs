@@ -30,7 +30,12 @@ public interface IEventEmitter
     /// <summary>
     /// Returns an array listing the events for which the emitter has registered listeners. The values in the array are strings.
     /// </summary>
-    IReadOnlyCollection<string> EventNames { get; }
+#if NET40 || NETSTANDARD1_0
+    IEnumerable<string>
+#else
+    IReadOnlyCollection<string>
+#endif
+        EventNames { get; }
 
     /// <summary>
     /// The current max listener value for the <see cref="EventEmitter"/> which is defaults to <see cref="EventEmitter.DefaultMaxListeners"/>
